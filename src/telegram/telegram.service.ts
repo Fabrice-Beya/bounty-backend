@@ -3,64 +3,132 @@ import * as TelegramBot from 'node-telegram-bot-api';
 import { CreateTipDto } from '../tip/dto';
 import { TipCategory, TipPriority } from '@prisma/client';
 import { PrismaService } from 'src/prisma.service';
+import OpenAI from "openai";
+import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class TelegramService {
     private bot: TelegramBot;
+    private openai: OpenAI;
 
     constructor(private prisma: PrismaService) {
         const token = process.env.TELEGRAM_BOT_TOKEN;
+        if (!token) {
+            throw new Error('TELEGRAM_BOT_TOKEN is not set');
+        }
         this.bot = new TelegramBot(token, { polling: true });
+
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+            throw new Error('OPENAI_API_KEY is not set');
+        }
+        this.openai = new OpenAI({ apiKey });
+
         this.setupListeners();
     }
 
     private setupListeners() {
         this.bot.onText(/\/start/, (msg) => {
             const chatId = msg.chat.id;
-            this.bot.sendMessage(chatId, 'Welcome! Use /createtip to submit a new tip.');
+            this.bot.sendMessage(chatId, 'Welcome! Send a voice note with details about a piracy event to submit a tip.');
         });
 
-        this.bot.onText(/\/createtip/, (msg) => {
-            const chatId = msg.chat.id;
-            this.bot.sendMessage(chatId, 'Please provide the tip details in the following format:\nTitle | Description | Category | Location');
-        });
-
-        this.bot.on('message', (msg) => {
-            if (msg.text && !msg.text.startsWith('/')) {
-                this.handleTipCreation(msg);
-            }
+        this.bot.on('voice', (msg) => {
+            this.handleVoiceNote(msg);
         });
     }
 
-    private async handleTipCreation(msg: TelegramBot.Message) {
-        console.log(msg);
+    private async handleVoiceNote(msg: TelegramBot.Message) {
         const chatId = msg.chat.id;
-        const parts = msg.text.split('|').map(part => part.trim());
+        const voiceNote = msg.voice;
 
-        if (parts.length !== 4) {
-            this.bot.sendMessage(chatId, 'Invalid format. Please use: Title | Description | Category | Location');
-            return;
+        if (voiceNote) {
+            const fileId = voiceNote.file_id;
+            try {
+                const fileInfo = await this.bot.getFile(fileId);
+                const filePath = fileInfo.file_path;
+                if (!filePath) {
+                    throw new Error('File path is undefined');
+                }
+                const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${filePath}`;
+
+                const localFilePath = await this.downloadFile(fileUrl, fileId);
+                const transcription = await this.transcribeAudio(localFilePath);
+                fs.unlinkSync(localFilePath);  // Clean up the local file after transcription
+
+                const tipData = await this.processTipFromTranscription(transcription);
+                const createdTip = await this.createTelegramTip(msg.from.id.toString(), tipData);
+
+                const referenceNumber = createdTip.id.substring(0, 6) + createdTip.id.substring(createdTip.id.length - 4);
+                await this.bot.sendMessage(chatId, `Your tip regarding ${tipData.title} has been successfully logged in the Multichoice Piracy Bounty Program. Reference number: ${referenceNumber}. Thank you for your contribution.`);
+            } catch (error) {
+                console.error('Error handling voice note:', error);
+                await this.bot.sendMessage(chatId, 'Failed to process the voice note. Please try again.');
+            }
+        }
+    }
+
+    private async downloadFile(fileUrl: string, fileId: string): Promise<string> {
+        const tmpDir = path.join(__dirname, '../../tmp');
+        if (!fs.existsSync(tmpDir)) {
+            fs.mkdirSync(tmpDir);
         }
 
-        const [title, description, category, location] = parts;
+        const localFilePath = path.join(tmpDir, `${fileId}.ogg`);
+        const response = await axios({
+            url: fileUrl,
+            method: 'GET',
+            responseType: 'stream',
+        });
 
-        const tipData: CreateTipDto = {
-            title,
-            description,
-            category: this.mapCategory(category),
+        return new Promise((resolve, reject) => {
+            const writer = fs.createWriteStream(localFilePath);
+            response.data.pipe(writer);
+            writer.on('finish', () => resolve(localFilePath));
+            writer.on('error', reject);
+        });
+    }
+
+    private async transcribeAudio(filePath: string): Promise<string> {
+        const file = fs.createReadStream(filePath);
+        const response = await this.openai.audio.transcriptions.create({
+            file,
+            model: 'whisper-1',
+        });
+        return response.text;
+    }
+
+    private async processTipFromTranscription(transcription: string): Promise<CreateTipDto> {
+        const prompt = `
+        Analyze the following transcription of a piracy event tip:
+        "${transcription}"
+        
+        Provide a response in the following JSON format:
+        {
+            "title": "A brief, high-level summary of the content",
+            "location": "The location mentioned in the tip, or 'Unknown' if not specified"
+        }
+        `;
+
+        const response = await this.openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [{ role: "user", content: prompt }],
+        });
+
+        const content = response.choices[0].message.content;
+        const parsedContent = JSON.parse(content);
+
+        return {
+            title: parsedContent.title,
+            description: transcription,
+            category: TipCategory.GENERAL,
             datetime: new Date().toISOString(),
-            location,
+            location: parsedContent.location,
             priority: TipPriority.MEDIUM,
             reward: 0,
         };
-
-        try {
-            const createdTip = await this.createTelegramTip(msg.from.id.toString(), tipData);
-            const referenceNumber = createdTip.id.substring(0, 6) + createdTip.id.substring(createdTip.id.length - 4);
-            this.bot.sendMessage(chatId, `Your Tip has successfully been logged in the Multichoice Piracy Bounty Program. This is your reference number for future communication: ${referenceNumber}. We look forward to working with you to bring the perpetrators to justice.`);
-        } catch (error) {
-            this.bot.sendMessage(chatId, 'Failed to create tip. Please try again.');
-        }
     }
 
     async createTelegramTip(telegramUserId: string, createTipDto: CreateTipDto) {
@@ -85,16 +153,6 @@ export class TelegramService {
             await this.bot.sendMessage(userId, message);
         } catch (error) {
             console.error('Failed to send Telegram message:', error);
-        }
-    }
-
-    private mapCategory(category: string): TipCategory {
-        switch (category.toLowerCase()) {
-            case 'general': return TipCategory.GENERAL;
-            case 'sighting': return TipCategory.SIGHTING;
-            case 'intelligence': return TipCategory.INTELLIGENCE;
-            case 'evidence': return TipCategory.EVIDENCE;
-            default: return TipCategory.OTHER;
         }
     }
 }

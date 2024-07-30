@@ -27,38 +27,21 @@ export class TipService {
     });
   }
 
-  // async createTelegramTip(telegramUserId: string, createTipDto: CreateTipDto): Promise<Tip> {
-  //   let telegramUser = await this.prisma.telegramUser.findUnique({ where: { id: telegramUserId } });
-  //   if (!telegramUser) {
-  //     telegramUser = await this.prisma.telegramUser.create({
-  //       data: { id: telegramUserId }
-  //     });
-  //   }
-
-  //   const { ...tipData } = createTipDto;
-  //   return this.prisma.tip.create({
-  //     data: {
-  //       ...tipData,
-  //       telegramUser: { connect: { id: telegramUserId } },
-  //     },
-  //   });
-  // }
-
   async notifyUser(id: string, updateData: Partial<UpdateTipDto>) {
     const tip = await this.prisma.tip.findUnique({ where: { id } });
     if (!tip) {
       throw new NotFoundException(`Tip with ID ${id} not found`);
     }
 
-    let message = 'Your tip has been updated:';
+    let message = '';
     if (updateData.priority) {
-      message += ` Priority changed to ${updateData.priority}.`;
+      message += ` Your tip has been updated: Priority changed to ${updateData.priority}.`;
     }
     if (updateData.status) {
-      message += ` Status changed to ${updateData.status}.`;
+      message += ` Your tip has been updated:Status changed to ${updateData.status}.`;
     }
     if (updateData.reward !== undefined) {
-      message += ` Reward updated to $${updateData.reward}.`;
+      message += ` Congratulations! A reward of R${updateData.reward} has been assigned to your tip. Please visit the Multichoice Piracy Bounty Portal and use your reference number ${tip.id.slice(0, 8).toUpperCase()} to claim your reward.`;
     }
 
     // Send notification to the user
@@ -68,21 +51,6 @@ export class TipService {
 
     return { success: true, message };
   }
-
-  // private mapCategory(category: string): TipCategory {
-  //   switch (category.toLowerCase()) {
-  //     case 'general':
-  //       return TipCategory.GENERAL;
-  //     case 'location':
-  //       return TipCategory.LOCATION;
-  //     case 'person':
-  //       return TipCategory.PERSON;
-  //     case 'event':
-  //       return TipCategory.EVENT;
-  //     default:
-  //       return TipCategory.OTHER;
-  //   }
-  // }
 
   async getAllTips(): Promise<Tip[]> {
     return this.prisma.tip.findMany();

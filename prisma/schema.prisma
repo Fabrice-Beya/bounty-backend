@@ -1,0 +1,124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  role      Role     @default(USER)
+  createdAt DateTime @default(now())
+  lastLogin DateTime @updatedAt
+  bounties  Bounty[]
+  profile   Profile?
+  tips      Tip[]
+}
+
+model TelegramUser {
+  id         String   @id
+  username   String?
+  firstName  String?
+  lastName   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tips       Tip[]
+}
+
+model Profile {
+  id                 String  @id @default(uuid())
+  username           String  @unique
+  fullName           String
+  notificationEmail  String
+  enableNotification Boolean @default(true)
+  bio                String?
+  contactNumber      String?
+  userId             String  @unique
+  user               User    @relation(fields: [userId], references: [id])
+}
+
+model Bounty {
+  id          String         @id @default(uuid())
+  title       String
+  description String
+  reward      Float
+  status      BountyStatus   @default(OPEN)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  expiresAt   DateTime?
+  category    BountyCategory
+  priority    BountyPriority
+  userId      String
+  user        User           @relation(fields: [userId], references: [id])
+}
+
+model Tip {
+  id             String      @id @default(uuid())
+  title          String
+  description    String
+  category       TipCategory
+  datetime       DateTime
+  location       String
+  status         TipStatus   @default(NEW)
+  priority       TipPriority @default(MEDIUM)
+  reward         Float       @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  userId         String?
+  user           User?       @relation(fields: [userId], references: [id])
+  telegramUserId String?
+  telegramUser   TelegramUser? @relation(fields: [telegramUserId], references: [id])
+}
+
+enum TipPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+enum Role {
+  USER
+  ADMIN
+}
+
+enum BountyStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum BountyPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum BountyCategory {
+  TELEGRAM
+  WHATSAPP
+  WEB
+  CALL_CENTER
+  TEAMS
+  OTHER
+}
+
+enum TipStatus {
+  NEW
+  IN_PROGRESS
+  VERIFIED
+  CLOSED
+  REJECTED
+  PAID
+}
+
+enum TipCategory {
+  GENERAL
+  SIGHTING
+  INTELLIGENCE
+  EVIDENCE
+  OTHER
+}
